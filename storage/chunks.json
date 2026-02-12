@@ -1,0 +1,26 @@
+[
+  {
+    "id": 0,
+    "text": "Acme Co - Support Knowledge Base"
+  },
+  {
+    "id": 1,
+    "text": "PASSWORD RESET\nTo reset your password, click “Forgot Password” on the login page. You will receive an email link. The link expires after 15 minutes."
+  },
+  {
+    "id": 2,
+    "text": "ACCOUNT ACCESS\nIf you cannot access your account, confirm your email is correct and try resetting your password. If the problem continues, contact support."
+  },
+  {
+    "id": 3,
+    "text": "BILLING\nBilling occurs on the 1st of every month. You can update your payment method from the Billing section in your account settings."
+  },
+  {
+    "id": 4,
+    "text": "REFUNDS\nRefunds are available within 14 days of purchase for annual plans only. Monthly plans are not refundable. Refunds take 5-7 business days."
+  },
+  {
+    "id": 5,
+    "text": "TECHNICAL ISSUES\nIf the app is crashing, update to the latest version. If issues continue, reinstall the app and restart your device."
+  }
+]
