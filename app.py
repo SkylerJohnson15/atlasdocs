@@ -1,6 +1,6 @@
 import os
 import re
-from typing import List, Tuple, Dict
+from typing import List, Tuple
 
 import numpy as np
 import streamlit as st
@@ -64,6 +64,90 @@ def get_api_key() -> str | None:
     except Exception:
         pass
     return api_key
+
+
+# -------------------------
+# Demo data (one-click)
+# -------------------------
+DEMO_DOCS = [
+    (
+        "AtlasDocs Demo - Support Policies.txt",
+        """REFUNDS
+Refunds are available within 14 days of purchase for annual plans only.
+Monthly plans are not refundable.
+Refund processing takes 5–7 business days.
+
+PASSWORD RESET
+To reset your password, click "Forgot Password" on the login page.
+You will receive an email with a reset link.
+Reset links expire after 15 minutes.
+
+BILLING TIMING
+Annual plans bill once per year on the purchase date.
+Monthly plans bill on the same day each month as the original purchase date.
+If a billing attempt fails, we retry automatically within 24 hours.
+""",
+    ),
+    (
+        "AtlasDocs Demo - Employee Onboarding.txt",
+        """ONBOARDING OVERVIEW
+New hires should complete onboarding within the first 5 business days.
+
+ACCOUNTS AND ACCESS
+Request access to tools through the IT portal.
+Multi-factor authentication is required for email and the password manager.
+
+EQUIPMENT
+Company laptops are issued within 2 business days of start date.
+If equipment is delayed, contact IT support.
+
+TIME OFF
+Time off requests should be submitted at least 2 weeks in advance when possible.
+""",
+    ),
+    (
+        "AtlasDocs Demo - Troubleshooting Guide.txt",
+        """APP CRASHING
+If the app is crashing, update to the latest version.
+If issues continue, reinstall the app and restart your device.
+
+LOGIN ISSUES
+If you cannot log in, confirm your email address is correct.
+Use "Forgot Password" to reset your password.
+If you do not receive the reset email within 10 minutes, check spam or contact support.
+
+PERFORMANCE
+Close background apps to improve performance.
+If you are on a slow network, try switching to a stable Wi-Fi connection.
+""",
+    ),
+]
+
+
+def load_demo_docs_into_library() -> int:
+    """
+    Adds demo docs into the saved library (idempotent).
+    Returns count of newly-added docs.
+    """
+    existing_ids = {d["doc_id"] for d in docstore.list_docs()}
+    added = 0
+
+    for filename, text in DEMO_DOCS:
+        chunks = chunk_text(text)
+        if not chunks:
+            continue
+        embs = embed_chunks(chunks)
+
+        doc_id = docstore.sha16(filename + "::" + text[:20000])
+        if doc_id in existing_ids:
+            continue
+
+        docstore.upsert_doc(doc_id, filename)
+        docstore.save_raw(doc_id, text)
+        docstore.save_index(doc_id, chunks, embs)
+        added += 1
+
+    return added
 
 
 # -------------------------
@@ -338,7 +422,7 @@ def landing_page():
           </div>
         </div>
         """,
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
     st.markdown("")
@@ -379,7 +463,7 @@ def landing_page():
               </div>
             </div>
             """,
-            unsafe_allow_html=True
+            unsafe_allow_html=True,
         )
 
     st.markdown("### Why this matters")
@@ -391,13 +475,26 @@ def landing_page():
           <div class="card"><b>Portfolio-ready</b><br/><span class="muted">RAG + UI + deployment + analytics.</span></div>
         </div>
         """,
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
-
 
 
 def docs_page():
     st.header("📚 Documents (Saved Library)")
+
+    colA, colB = st.columns([1, 2])
+    with colA:
+        if st.button("✨ Load demo docs", use_container_width=True):
+            with st.spinner("Loading demo documents..."):
+                added = load_demo_docs_into_library()
+            if added == 0:
+                st.info("Demo docs are already loaded.")
+            else:
+                st.success(f"Loaded {added} demo document(s).")
+            st.rerun()
+
+    with colB:
+        st.caption("Use this if you want instant content to test the app without uploading anything.")
 
     upload = st.file_uploader("Upload a document", type=["txt", "pdf"])
     if upload:
@@ -418,7 +515,7 @@ def docs_page():
 
     docs = docstore.list_docs()
     if not docs:
-        st.info("No saved docs yet. Upload a PDF/TXT above.")
+        st.info("No saved docs yet. Upload a PDF/TXT above, or click **Load demo docs**.")
         return
 
     st.subheader("Saved docs")
@@ -437,6 +534,7 @@ def docs_page():
 
 def demo_page(user_label: str):
     st.title("🧠 AtlasDocs Demo")
+    st.caption("Modern RAG assistant: chat on top, sources below. Answers are grounded with citations.")
 
     api_key = get_api_key()
     if not api_key:
@@ -446,7 +544,7 @@ def demo_page(user_label: str):
 
     docs = docstore.list_docs()
     if not docs:
-        st.info("No saved documents yet. Go to **Documents** and upload a PDF/TXT.")
+        st.info("No saved documents yet. Go to **Documents** and upload a PDF/TXT (or load demo docs).")
         return
 
     doc_map = {d["name"]: d["doc_id"] for d in docs}
@@ -460,7 +558,6 @@ def demo_page(user_label: str):
     model_name = st.sidebar.text_input("OpenAI model", value="gpt-4.1-mini")
     top_k = st.sidebar.slider("Sources to retrieve", 1, 8, 4)
 
-    # Optional display name (analytics label)
     st.sidebar.header("Analytics label")
     st.sidebar.caption("Optional: used only for analytics grouping.")
     user_label = st.sidebar.text_input("Name", value=user_label)
@@ -474,7 +571,6 @@ def demo_page(user_label: str):
     if "last_conf" not in st.session_state:
         st.session_state.last_conf = None
 
-    # suggestions from first selected doc
     base_doc = selected_doc_ids[0] if selected_doc_ids else docs[0]["doc_id"]
     loaded = docstore.load_index(base_doc)
     if loaded:
@@ -516,7 +612,6 @@ def demo_page(user_label: str):
             st.error("Select at least one document in the sidebar.")
             return
 
-        # analytics event
         docstore.log_event(user=user_label or "anonymous", doc_ids=selected_doc_ids, question=q)
 
         hits = retrieve_across_docs(q, selected_doc_ids, top_k=top_k)
@@ -560,6 +655,7 @@ def analytics_page():
 
     docstore.init_db()
     import sqlite3
+
     with sqlite3.connect(docstore.DB_PATH) as conn:
         df = pd.read_sql_query("SELECT ts, user, doc_ids, question FROM events ORDER BY ts ASC", conn)
 
@@ -599,7 +695,6 @@ def main():
     st.sidebar.title("AtlasDocs")
     page = st.sidebar.radio("Navigate", ["Landing", "Documents", "Demo", "Analytics"], index=2)
 
-    # default analytics label
     if "user_label" not in st.session_state:
         st.session_state["user_label"] = "anonymous"
 
