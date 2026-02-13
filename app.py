@@ -25,10 +25,12 @@ def apply_modern_ui():
         """
         <style>
         .block-container { padding-top: 1.25rem; padding-bottom: 2.4rem; max-width: 1250px; }
+
         section[data-testid="stSidebar"] {
             background: radial-gradient(1200px 600px at 20% 0%, rgba(124,58,237,0.22), rgba(17,26,46,0.35));
             border-right: 1px solid rgba(255,255,255,0.06);
         }
+
         .stButton > button {
             border-radius: 12px !important;
             padding: 0.58rem 0.95rem !important;
@@ -41,12 +43,23 @@ def apply_modern_ui():
             background: rgba(124,58,237,0.12) !important;
             transform: translateY(-1px);
         }
+
         input, textarea { border-radius: 12px !important; }
+
         details {
             border-radius: 14px !important;
             border: 1px solid rgba(255,255,255,0.08) !important;
             background: rgba(255,255,255,0.02) !important;
             padding: 0.35rem 0.6rem;
+        }
+
+        /* Mobile-friendly tweaks (keep sidebar so Streamlit provides hamburger menu) */
+        @media (max-width: 768px) {
+          .block-container { padding-left: 0.9rem; padding-right: 0.9rem; }
+          .stButton > button { width: 100% !important; }
+          h1 { font-size: 1.65rem !important; }
+          h2 { font-size: 1.35rem !important; }
+          h3 { font-size: 1.1rem !important; }
         }
         </style>
         """,
@@ -125,10 +138,7 @@ If you are on a slow network, try switching to a stable Wi-Fi connection.
 
 
 def load_demo_docs_into_library() -> int:
-    """
-    Adds demo docs into the saved library (idempotent).
-    Returns count of newly-added docs.
-    """
+    """Adds demo docs into the saved library (idempotent). Returns count of newly-added docs."""
     existing_ids = {d["doc_id"] for d in docstore.list_docs()}
     added = 0
 
@@ -171,11 +181,11 @@ def chunk_text(text: str) -> List[str]:
     if not text:
         return []
 
-    # Split on ALL CAPS headings (nice for policies/FAQ)
+    # Split on ALL CAPS headings
     sections = re.split(r"\n(?=[A-Z][A-Z ]+\n)", text)
     chunks = [s.strip() for s in sections if s.strip()]
 
-    # Fallback if no headings: basic chunking
+    # Fallback chunking if no headings
     if len(chunks) <= 1:
         words = text.split()
         out, buf = [], []
@@ -273,7 +283,7 @@ Write 3-6 realistic questions someone would ask about this document.
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     qs = []
     for l in lines:
-        l = re.sub(r"^[\-\*\d\.\)\s]+", "", l).strip()
+        l = re.sub(r"^[\\-\\*\\d\\.\\)\\s]+", "", l).strip()
         if not l:
             continue
         if not l.endswith("?"):
@@ -443,7 +453,7 @@ def landing_page():
         st.markdown("### Quick start")
         st.markdown(
             """
-1) Go to **Documents** → upload a PDF/TXT  
+1) Go to **Documents** → click **✨ Load demo docs** (or upload a PDF/TXT)  
 2) Go to **Demo** → select docs → ask a question  
 3) Check **Analytics** after a few questions  
             """
@@ -454,12 +464,12 @@ def landing_page():
         st.markdown(
             """
             <div class="preview">
-              <div class="muted" style="margin-bottom:10px;">Smart prompts + citations</div>
-              <div class="muted">Suggested questions adapt to the uploaded document.</div>
+              <div class="muted" style="margin-bottom:10px;">Mobile-friendly: Chat / Sources tabs</div>
+              <div class="muted">Suggested questions adapt to the selected document.</div>
               <div style="margin-top:12px;">
                 <span class="kbd">What is the refund policy?</span>
                 <span class="kbd">How do I reset my password?</span>
-                <span class="kbd">What are billing dates?</span>
+                <span class="kbd">When is billing?</span>
               </div>
             </div>
             """,
@@ -472,7 +482,7 @@ def landing_page():
         <div class="grid3">
           <div class="card"><b>Grounded answers</b><br/><span class="muted">Only uses retrieved text from your docs.</span></div>
           <div class="card"><b>Multi-doc search</b><br/><span class="muted">Ask questions across several documents at once.</span></div>
-          <div class="card"><b>Portfolio-ready</b><br/><span class="muted">RAG + UI + deployment + analytics.</span></div>
+          <div class="card"><b>Mobile friendly</b><br/><span class="muted">Tabs prevent cramped layouts on phones.</span></div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -492,9 +502,8 @@ def docs_page():
             else:
                 st.success(f"Loaded {added} demo document(s).")
             st.rerun()
-
     with colB:
-        st.caption("Use this if you want instant content to test the app without uploading anything.")
+        st.caption("Instant content to test the app without uploading anything.")
 
     upload = st.file_uploader("Upload a document", type=["txt", "pdf"])
     if upload:
@@ -515,7 +524,7 @@ def docs_page():
 
     docs = docstore.list_docs()
     if not docs:
-        st.info("No saved docs yet. Upload a PDF/TXT above, or click **Load demo docs**.")
+        st.info("No saved docs yet. Upload a PDF/TXT above, or click **✨ Load demo docs**.")
         return
 
     st.subheader("Saved docs")
@@ -534,7 +543,7 @@ def docs_page():
 
 def demo_page(user_label: str):
     st.title("🧠 AtlasDocs Demo")
-    st.caption("Modern RAG assistant: chat on top, sources below. Answers are grounded with citations.")
+    st.caption("Mobile-friendly: Chat and Sources are in tabs. Sidebar becomes a hamburger on mobile.")
 
     api_key = get_api_key()
     if not api_key:
@@ -550,6 +559,7 @@ def demo_page(user_label: str):
     doc_map = {d["name"]: d["doc_id"] for d in docs}
     names = list(doc_map.keys())
 
+    # Keep sidebar controls (hamburger on mobile)
     st.sidebar.header("Search Scope")
     selected_names = st.sidebar.multiselect("Search these documents", options=names, default=names[:1])
     selected_doc_ids = [doc_map[n] for n in selected_names] if selected_names else []
@@ -562,6 +572,7 @@ def demo_page(user_label: str):
     st.sidebar.caption("Optional: used only for analytics grouping.")
     user_label = st.sidebar.text_input("Name", value=user_label)
 
+    # State
     if "chat" not in st.session_state:
         st.session_state.chat = []
     if "pending" not in st.session_state:
@@ -583,71 +594,72 @@ def demo_page(user_label: str):
     def ask(q: str):
         st.session_state.pending = (q or "").strip()
 
-    st.markdown("### Suggested questions (auto-generated from your doc)")
-    cols = st.columns(3)
+    # Suggested prompts: 1-column (better on mobile)
+    st.markdown("### Suggested questions")
     for i, q in enumerate(suggested):
-        with cols[i % 3]:
-            if st.button(q, use_container_width=True, key=f"sugg_{i}"):
-                ask(q)
+        if st.button(q, use_container_width=True, key=f"sugg_{i}"):
+            ask(q)
 
-    st.markdown("### Chat")
-    for m in st.session_state.chat:
-        with st.chat_message(m["role"]):
-            st.write(m["content"])
+    tab_chat, tab_sources = st.tabs(["💬 Chat", "📚 Sources"])
 
-    question = st.text_input("Ask a question")
-    if st.button("Send"):
-        ask(question)
+    with tab_chat:
+        for m in st.session_state.chat:
+            with st.chat_message(m["role"]):
+                st.write(m["content"])
 
-    pending = st.session_state.pending
-    if pending:
-        q = pending
-        st.session_state.pending = None
+        question = st.text_input("Ask a question", placeholder="Type your question…")
+        if st.button("Send", use_container_width=True):
+            ask(question)
 
-        st.session_state.chat.append({"role": "user", "content": q})
-        with st.chat_message("user"):
-            st.write(q)
+        pending = st.session_state.pending
+        if pending:
+            q = pending
+            st.session_state.pending = None
 
-        if not selected_doc_ids:
-            st.error("Select at least one document in the sidebar.")
-            return
+            st.session_state.chat.append({"role": "user", "content": q})
+            with st.chat_message("user"):
+                st.write(q)
 
-        docstore.log_event(user=user_label or "anonymous", doc_ids=selected_doc_ids, question=q)
+            if not selected_doc_ids:
+                st.error("Select at least one document in the sidebar (hamburger on mobile).")
+                return
 
-        hits = retrieve_across_docs(q, selected_doc_ids, top_k=top_k)
-        st.session_state.last_hits = hits
+            docstore.log_event(user=user_label or "anonymous", doc_ids=selected_doc_ids, question=q)
 
-        sources = []
-        sims = []
-        for i, (sim, _doc_id, _chunk_idx, doc_name, chunk_text) in enumerate(hits, start=1):
-            sources.append((i, doc_name, chunk_text))
-            sims.append(sim)
+            hits = retrieve_across_docs(q, selected_doc_ids, top_k=top_k)
+            st.session_state.last_hits = hits
 
-        with st.spinner("Thinking..."):
-            answer = synthesize_answer(q, sources, model_name=model_name)
+            sources = []
+            sims = []
+            for i, (sim, _doc_id, _chunk_idx, doc_name, chunk_text) in enumerate(hits, start=1):
+                sources.append((i, doc_name, chunk_text))
+                sims.append(sim)
 
-        conf = compute_confidence(sims, answer)
-        st.session_state.last_conf = conf
+            with st.spinner("Thinking..."):
+                answer = synthesize_answer(q, sources, model_name=model_name)
 
-        st.session_state.chat.append({"role": "assistant", "content": answer})
-        with st.chat_message("assistant"):
-            st.write(answer)
-            if conf == "High":
-                st.success("Confidence: HIGH")
-            elif conf == "Medium":
-                st.warning("Confidence: MEDIUM")
-            else:
-                st.error("Confidence: LOW")
+            conf = compute_confidence(sims, answer)
+            st.session_state.last_conf = conf
 
-    st.markdown("---")
-    st.markdown("### Sources")
-    if not st.session_state.last_hits:
-        st.info("Ask a question to see sources.")
-    else:
-        st.caption(f"Confidence: **{st.session_state.last_conf}**")
-        for i, (sim, doc_id, chunk_idx, doc_name, chunk_text) in enumerate(st.session_state.last_hits, start=1):
-            with st.expander(f"[{i}] {doc_name} • similarity {sim:.3f}", expanded=(i == 1)):
-                st.write(chunk_text)
+            st.session_state.chat.append({"role": "assistant", "content": answer})
+            with st.chat_message("assistant"):
+                st.write(answer)
+                if conf == "High":
+                    st.success("Confidence: HIGH")
+                elif conf == "Medium":
+                    st.warning("Confidence: MEDIUM")
+                else:
+                    st.error("Confidence: LOW")
+
+    with tab_sources:
+        st.subheader("Sources")
+        if not st.session_state.last_hits:
+            st.info("Ask a question to see sources.")
+        else:
+            st.caption(f"Confidence: **{st.session_state.last_conf}**")
+            for i, (sim, doc_id, chunk_idx, doc_name, chunk_text) in enumerate(st.session_state.last_hits, start=1):
+                with st.expander(f"[{i}] {doc_name} • similarity {sim:.3f}", expanded=(i == 1)):
+                    st.write(chunk_text)
 
 
 def analytics_page():
