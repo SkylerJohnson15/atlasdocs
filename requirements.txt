@@ -1,9 +1,9 @@
 streamlit
-sentence-transformers
-faiss-cpu
-scikit-learn
 numpy
-openai
-pypdf
 pandas
 matplotlib
+pypdf
+sentence-transformers
+scikit-learn
+openai
+bcrypt

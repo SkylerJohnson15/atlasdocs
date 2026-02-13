@@ -274,11 +274,126 @@ def compute_confidence(similarities: List[float], answer: str) -> str:
 # Pages
 # -------------------------
 def landing_page():
-    st.markdown("# 🧠 AtlasDocs")
     st.markdown(
-        "Upload PDFs/TXTs, save them to a library, search across multiple documents, and get cited answers.\n\n"
-        "**Tip:** Start in **Documents** → upload a PDF/TXT → then go to **Demo**."
+        """
+        <style>
+        .hero {
+            padding: 26px 24px;
+            border-radius: 20px;
+            border: 1px solid rgba(255,255,255,0.10);
+            background:
+              radial-gradient(800px 400px at 10% 0%, rgba(124,58,237,0.30), rgba(0,0,0,0)),
+              linear-gradient(135deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
+        }
+        .badge {
+            display:inline-flex; align-items:center; gap:8px;
+            padding: 6px 10px;
+            border-radius: 999px;
+            border: 1px solid rgba(255,255,255,0.14);
+            background: rgba(255,255,255,0.05);
+            font-size: 12px;
+            opacity: 0.92;
+        }
+        .grid3 {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 14px;
+            margin-top: 16px;
+        }
+        .card {
+            padding: 16px 16px;
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.09);
+            background: rgba(255,255,255,0.03);
+        }
+        .muted { opacity: 0.80; }
+        .preview {
+            border-radius: 18px;
+            border: 1px solid rgba(255,255,255,0.10);
+            background: rgba(255,255,255,0.03);
+            padding: 16px;
+        }
+        .kbd {
+            display:inline-block;
+            padding: 2px 8px;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.12);
+            background: rgba(255,255,255,0.05);
+            font-size: 12px;
+        }
+        @media (max-width: 900px) {
+            .grid3 { grid-template-columns: 1fr; }
+        }
+        </style>
+
+        <div class="hero">
+          <div class="badge">⚡ True RAG • Multi-doc • PDF • Analytics</div>
+          <h1 style="margin-top:14px; margin-bottom:6px;">AtlasDocs</h1>
+          <h3 style="margin-top:0px; font-weight:600;">
+            Your docs, instantly searchable — answers with citations, not guesses.
+          </h3>
+          <div class="muted" style="margin-top:10px;">
+            Upload policies, SOPs, FAQs, onboarding docs, contracts — then chat with a grounded assistant
+            that shows exactly where every answer came from.
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True
     )
+
+    st.markdown("")
+    col1, col2 = st.columns([1.2, 1], gap="large")
+
+    with col1:
+        st.markdown("### What you can do")
+        st.markdown(
+            """
+- **Upload PDFs/TXTs** to a saved library  
+- **Search across multiple documents** at once  
+- **Cited answers** with source snippets  
+- **Smart suggested questions** based on your document  
+- **Analytics dashboard** (questions per day, recent questions)  
+            """
+        )
+
+        st.markdown("### Quick start")
+        st.markdown(
+            """
+1) Go to **Documents** → upload a PDF/TXT  
+2) Go to **Demo** → select docs → ask a question  
+3) Check **Analytics** after a few questions  
+            """
+        )
+
+    with col2:
+        st.markdown("### Product preview")
+        st.markdown(
+            """
+            <div class="preview">
+              <div class="muted" style="margin-bottom:10px;">Smart prompts + citations</div>
+              <div class="muted">Suggested questions adapt to the uploaded document.</div>
+              <div style="margin-top:12px;">
+                <span class="kbd">What is the refund policy?</span>
+                <span class="kbd">How do I reset my password?</span>
+                <span class="kbd">What are billing dates?</span>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    st.markdown("### Why this matters")
+    st.markdown(
+        """
+        <div class="grid3">
+          <div class="card"><b>Grounded answers</b><br/><span class="muted">Only uses retrieved text from your docs.</span></div>
+          <div class="card"><b>Multi-doc search</b><br/><span class="muted">Ask questions across several documents at once.</span></div>
+          <div class="card"><b>Portfolio-ready</b><br/><span class="muted">RAG + UI + deployment + analytics.</span></div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
 
 
 def docs_page():
