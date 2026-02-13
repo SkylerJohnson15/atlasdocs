@@ -1,11 +1,9 @@
 import os
 import re
-from datetime import datetime
 from typing import List, Tuple, Dict
 
 import numpy as np
 import streamlit as st
-import bcrypt
 import pandas as pd
 import matplotlib.pyplot as plt
 
@@ -15,7 +13,6 @@ from sklearn.neighbors import NearestNeighbors
 from openai import OpenAI
 
 import docstore
-
 
 EMBED_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
@@ -58,7 +55,7 @@ def apply_modern_ui():
 
 
 # -------------------------
-# Auth
+# Secrets / API Key
 # -------------------------
 def get_api_key() -> str | None:
     api_key = os.environ.get("OPENAI_API_KEY")
@@ -67,45 +64,6 @@ def get_api_key() -> str | None:
     except Exception:
         pass
     return api_key
-
-
-def get_users() -> Dict[str, str]:
-    try:
-        users = st.secrets.get("USERS", {})
-        if isinstance(users, dict):
-            return users
-        return {}
-    except Exception:
-        return {}
-
-
-def is_logged_in() -> bool:
-    return bool(st.session_state.get("auth_user"))
-
-
-def login_ui():
-    st.title("🔐 Sign in")
-    st.caption("This is a simple demo login (stored in Streamlit Secrets).")
-
-    users = get_users()
-    if not users:
-        st.error("No USERS found in Streamlit Secrets. Add USERS in Secrets first.")
-        st.stop()
-
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
-    if st.button("Sign in"):
-        if username not in users:
-            st.error("Invalid username/password.")
-            return
-        hashed = users[username].encode("utf-8")
-        ok = bcrypt.checkpw(password.encode("utf-8"), hashed)
-        if not ok:
-            st.error("Invalid username/password.")
-            return
-        st.session_state["auth_user"] = username
-        st.success("Signed in!")
-        st.rerun()
 
 
 # -------------------------
@@ -128,13 +86,15 @@ def chunk_text(text: str) -> List[str]:
     text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
     if not text:
         return []
+
+    # Split on ALL CAPS headings (nice for policies/FAQ)
     sections = re.split(r"\n(?=[A-Z][A-Z ]+\n)", text)
     chunks = [s.strip() for s in sections if s.strip()]
-    # fallback: if no headers, do basic chunking
+
+    # Fallback if no headings: basic chunking
     if len(chunks) <= 1:
         words = text.split()
-        out = []
-        buf = []
+        out, buf = [], []
         for w in words:
             buf.append(w)
             if len(buf) >= 220:
@@ -143,6 +103,7 @@ def chunk_text(text: str) -> List[str]:
         if buf:
             out.append(" ".join(buf))
         chunks = out
+
     return chunks
 
 
@@ -153,8 +114,7 @@ def load_embedder() -> SentenceTransformer:
 
 def embed_chunks(chunks: List[str]) -> np.ndarray:
     model = load_embedder()
-    embs = model.encode(chunks, convert_to_numpy=True, normalize_embeddings=True).astype(np.float32)
-    return embs
+    return model.encode(chunks, convert_to_numpy=True, normalize_embeddings=True).astype(np.float32)
 
 
 def build_knn(embeddings: np.ndarray) -> NearestNeighbors:
@@ -174,10 +134,9 @@ def retrieve_across_docs(
     model = load_embedder()
     q_emb = model.encode([query], convert_to_numpy=True, normalize_embeddings=True).astype(np.float32)
 
-    # Load embeddings/chunks and build a combined matrix
-    all_chunks = []
-    all_meta = []  # (doc_id, chunk_idx, doc_name)
-    all_embs = []
+    all_chunks: List[str] = []
+    all_meta: List[Tuple[str, int, str]] = []  # (doc_id, chunk_idx, doc_name)
+    all_embs: List[np.ndarray] = []
 
     docs = {d["doc_id"]: d["name"] for d in docstore.list_docs()}
 
@@ -196,6 +155,7 @@ def retrieve_across_docs(
 
     E = np.vstack(all_embs)
     nn = build_knn(E)
+
     k = min(top_k, len(all_chunks))
     distances, idxs = nn.kneighbors(q_emb, n_neighbors=k)
 
@@ -203,13 +163,13 @@ def retrieve_across_docs(
     for dist, idx in zip(distances[0], idxs[0]):
         sim = 1.0 - float(dist)
         doc_id, chunk_idx, doc_name = all_meta[int(idx)]
-        hits.append((sim, doc_id, chunk_idx, doc_name, all_chunks[int(idx)],))
+        hits.append((sim, doc_id, chunk_idx, doc_name, all_chunks[int(idx)]))
     hits.sort(key=lambda x: x[0], reverse=True)
     return hits
 
 
 # -------------------------
-# Smart suggestions (Option C)
+# Smart suggestions
 # -------------------------
 @st.cache_data(show_spinner=False)
 def generate_suggested_questions(doc_key: str, doc_preview: str, model_name: str) -> List[str]:
@@ -236,16 +196,19 @@ Write 3-6 realistic questions someone would ask about this document.
             l += "?"
         qs.append(l)
 
-    # de-dupe
-    out = []
-    seen = set()
+    out, seen = [], set()
     for q in qs:
         k = q.lower()
         if k in seen:
             continue
         seen.add(k)
         out.append(q)
-    return out[:6] if out else ["What is this document about?", "What are the key rules/policies?", "Are there deadlines or time limits?"]
+
+    return out[:6] if out else [
+        "What is this document about?",
+        "What are the key policies or rules?",
+        "Are there deadlines or time limits mentioned?",
+    ]
 
 
 def doc_preview_from_chunks(chunks: List[str], max_chars: int = 4500) -> str:
@@ -311,18 +274,21 @@ def compute_confidence(similarities: List[float], answer: str) -> str:
 # Pages
 # -------------------------
 def landing_page():
-    st.markdown("## AtlasDocs")
-    st.markdown("Upload PDFs/TXTs, save them, search across multiple documents, and get cited answers.")
+    st.markdown("# 🧠 AtlasDocs")
+    st.markdown(
+        "Upload PDFs/TXTs, save them to a library, search across multiple documents, and get cited answers.\n\n"
+        "**Tip:** Start in **Documents** → upload a PDF/TXT → then go to **Demo**."
+    )
 
 
-def docs_page(user: str):
+def docs_page():
     st.header("📚 Documents (Saved Library)")
 
     upload = st.file_uploader("Upload a document", type=["txt", "pdf"])
     if upload:
         raw = read_uploaded_file(upload)
         if not raw.strip():
-            st.error("Could not read document.")
+            st.error("Could not read document (empty or unreadable).")
             return
 
         chunks = chunk_text(raw)
@@ -340,7 +306,7 @@ def docs_page(user: str):
         st.info("No saved docs yet. Upload a PDF/TXT above.")
         return
 
-    st.subheader("Your saved docs")
+    st.subheader("Saved docs")
     for d in docs:
         c1, c2, c3 = st.columns([4, 2, 1])
         with c1:
@@ -354,12 +320,12 @@ def docs_page(user: str):
                 st.rerun()
 
 
-def demo_page(user: str):
+def demo_page(user_label: str):
     st.title("🧠 AtlasDocs Demo")
 
     api_key = get_api_key()
     if not api_key:
-        st.error("OPENAI_API_KEY is not set in Streamlit Cloud Secrets.")
+        st.error("OPENAI_API_KEY is not set in Streamlit Secrets.")
         st.stop()
     os.environ["OPENAI_API_KEY"] = api_key
 
@@ -379,6 +345,11 @@ def demo_page(user: str):
     model_name = st.sidebar.text_input("OpenAI model", value="gpt-4.1-mini")
     top_k = st.sidebar.slider("Sources to retrieve", 1, 8, 4)
 
+    # Optional display name (analytics label)
+    st.sidebar.header("Analytics label")
+    st.sidebar.caption("Optional: used only for analytics grouping.")
+    user_label = st.sidebar.text_input("Name", value=user_label)
+
     if "chat" not in st.session_state:
         st.session_state.chat = []
     if "pending" not in st.session_state:
@@ -388,7 +359,7 @@ def demo_page(user: str):
     if "last_conf" not in st.session_state:
         st.session_state.last_conf = None
 
-    # build suggestions from the first selected doc (or first doc)
+    # suggestions from first selected doc
     base_doc = selected_doc_ids[0] if selected_doc_ids else docs[0]["doc_id"]
     loaded = docstore.load_index(base_doc)
     if loaded:
@@ -399,7 +370,7 @@ def demo_page(user: str):
         suggested = ["What is this document about?", "What are key policies?", "Any deadlines?"]
 
     def ask(q: str):
-        st.session_state.pending = q.strip()
+        st.session_state.pending = (q or "").strip()
 
     st.markdown("### Suggested questions (auto-generated from your doc)")
     cols = st.columns(3)
@@ -431,12 +402,11 @@ def demo_page(user: str):
             return
 
         # analytics event
-        docstore.log_event(user=user, doc_ids=selected_doc_ids, question=q)
+        docstore.log_event(user=user_label or "anonymous", doc_ids=selected_doc_ids, question=q)
 
         hits = retrieve_across_docs(q, selected_doc_ids, top_k=top_k)
         st.session_state.last_hits = hits
 
-        # build sources list for LLM
         sources = []
         sims = []
         for i, (sim, _doc_id, _chunk_idx, doc_name, chunk_text) in enumerate(hits, start=1):
@@ -473,7 +443,6 @@ def demo_page(user: str):
 def analytics_page():
     st.header("📈 Analytics")
 
-    # Pull events and compute charts
     docstore.init_db()
     import sqlite3
     with sqlite3.connect(docstore.DB_PATH) as conn:
@@ -486,28 +455,22 @@ def analytics_page():
     df["ts"] = pd.to_datetime(df["ts"])
     df["date"] = df["ts"].dt.date
 
-    total = len(df)
-    st.metric("Total questions", total)
+    st.metric("Total questions", int(len(df)))
 
     st.subheader("Questions per day")
     per_day = df.groupby("date").size().reset_index(name="questions")
-
     fig = plt.figure()
     plt.plot(per_day["date"], per_day["questions"])
     plt.xticks(rotation=45, ha="right")
     plt.tight_layout()
     st.pyplot(fig)
 
-    st.subheader("Top users")
+    st.subheader("Top user labels")
     top_users = df.groupby("user").size().sort_values(ascending=False).head(20)
     st.dataframe(top_users.reset_index(name="questions"), use_container_width=True)
 
-    st.subheader("Top doc sets")
-    top_docsets = df.groupby("doc_ids").size().sort_values(ascending=False).head(20)
-    st.dataframe(top_docsets.reset_index(name="questions"), use_container_width=True)
-
     st.subheader("Recent questions")
-    st.dataframe(df.tail(30), use_container_width=True)
+    st.dataframe(df.tail(50), use_container_width=True)
 
 
 # -------------------------
@@ -518,27 +481,19 @@ def main():
     apply_modern_ui()
     docstore.init_db()
 
-    # Auth gate
-    if not is_logged_in():
-        login_ui()
-        return
-
-    user = st.session_state["auth_user"]
-
     st.sidebar.title("AtlasDocs")
-    st.sidebar.caption(f"Signed in as **{user}**")
-    if st.sidebar.button("Sign out"):
-        st.session_state["auth_user"] = None
-        st.rerun()
-
     page = st.sidebar.radio("Navigate", ["Landing", "Documents", "Demo", "Analytics"], index=2)
+
+    # default analytics label
+    if "user_label" not in st.session_state:
+        st.session_state["user_label"] = "anonymous"
 
     if page == "Landing":
         landing_page()
     elif page == "Documents":
-        docs_page(user)
+        docs_page()
     elif page == "Demo":
-        demo_page(user)
+        demo_page(user_label=st.session_state["user_label"])
     else:
         analytics_page()
 
