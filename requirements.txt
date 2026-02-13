@@ -4,3 +4,7 @@ faiss-cpu
 scikit-learn
 numpy
 openai
+pypdf
+bcrypt
+pandas
+matplotlib

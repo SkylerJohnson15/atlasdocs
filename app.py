@@ -1,44 +1,37 @@
 import os
 import re
-import hashlib
-from typing import List, Tuple, Dict
 from datetime import datetime
+from typing import List, Tuple, Dict
 
 import numpy as np
 import streamlit as st
+import bcrypt
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
+from sklearn.neighbors import NearestNeighbors
 from openai import OpenAI
 
-# Vector search: prefer FAISS, fallback to scikit-learn
-try:
-    import faiss  # type: ignore
-    HAS_FAISS = True
-except Exception:
-    HAS_FAISS = False
-
-from sklearn.neighbors import NearestNeighbors
+import docstore
 
 
-# -------------------------
-# Core Settings
-# -------------------------
 EMBED_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
 
 # -------------------------
-# UI Polish
+# UI
 # -------------------------
 def apply_modern_ui():
     st.markdown(
         """
         <style>
         .block-container { padding-top: 1.25rem; padding-bottom: 2.4rem; max-width: 1250px; }
-
         section[data-testid="stSidebar"] {
             background: radial-gradient(1200px 600px at 20% 0%, rgba(124,58,237,0.22), rgba(17,26,46,0.35));
             border-right: 1px solid rgba(255,255,255,0.06);
         }
-
         .stButton > button {
             border-radius: 12px !important;
             padding: 0.58rem 0.95rem !important;
@@ -51,87 +44,23 @@ def apply_modern_ui():
             background: rgba(124,58,237,0.12) !important;
             transform: translateY(-1px);
         }
-
         input, textarea { border-radius: 12px !important; }
-
-        div[data-testid="stAlert"] {
-            border-radius: 14px !important;
-            border: 1px solid rgba(255,255,255,0.08) !important;
-            background: rgba(255,255,255,0.03) !important;
-        }
-
         details {
             border-radius: 14px !important;
             border: 1px solid rgba(255,255,255,0.08) !important;
             background: rgba(255,255,255,0.02) !important;
             padding: 0.35rem 0.6rem;
         }
-
-        div[data-testid="stChatMessage"] {
-            border-radius: 16px !important;
-            border: 1px solid rgba(255,255,255,0.06);
-            background: rgba(255,255,255,0.02);
-            padding: 0.2rem 0.25rem;
-        }
-
-        .hero {
-            padding: 26px 24px;
-            border-radius: 20px;
-            border: 1px solid rgba(255,255,255,0.10);
-            background:
-              radial-gradient(800px 400px at 10% 0%, rgba(124,58,237,0.30), rgba(0,0,0,0)),
-              linear-gradient(135deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
-        }
-        .badge {
-            display:inline-flex; align-items:center; gap:8px;
-            padding: 6px 10px;
-            border-radius: 999px;
-            border: 1px solid rgba(255,255,255,0.14);
-            background: rgba(255,255,255,0.05);
-            font-size: 12px;
-            opacity: 0.92;
-        }
-        .grid3 {
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 14px;
-            margin-top: 16px;
-        }
-        .card {
-            padding: 16px 16px;
-            border-radius: 16px;
-            border: 1px solid rgba(255,255,255,0.09);
-            background: rgba(255,255,255,0.03);
-        }
-        .muted { opacity: 0.80; }
-        .preview {
-            border-radius: 18px;
-            border: 1px solid rgba(255,255,255,0.10);
-            background: rgba(255,255,255,0.03);
-            padding: 16px;
-        }
-        .kbd {
-            display:inline-block;
-            padding: 2px 8px;
-            border-radius: 8px;
-            border: 1px solid rgba(255,255,255,0.12);
-            background: rgba(255,255,255,0.05);
-            font-size: 12px;
-        }
-        @media (max-width: 900px) {
-            .grid3 { grid-template-columns: 1fr; }
-        }
         </style>
         """,
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
 
 # -------------------------
-# Helpers
+# Auth
 # -------------------------
 def get_api_key() -> str | None:
-    """Safe secrets/env loading (won't crash locally if no secrets.toml exists)."""
     api_key = os.environ.get("OPENAI_API_KEY")
     try:
         api_key = st.secrets.get("OPENAI_API_KEY") or api_key
@@ -140,108 +69,237 @@ def get_api_key() -> str | None:
     return api_key
 
 
-def stable_doc_id(text: str, filename: str) -> str:
-    h = hashlib.sha256()
-    h.update(filename.encode("utf-8", errors="ignore"))
-    h.update(b"::")
-    h.update(text.encode("utf-8", errors="ignore"))
-    return h.hexdigest()[:16]
+def get_users() -> Dict[str, str]:
+    try:
+        users = st.secrets.get("USERS", {})
+        if isinstance(users, dict):
+            return users
+        return {}
+    except Exception:
+        return {}
 
 
-def parse_bullets(text: str) -> List[str]:
-    """Extract up to ~6 questions from model output."""
+def is_logged_in() -> bool:
+    return bool(st.session_state.get("auth_user"))
+
+
+def login_ui():
+    st.title("🔐 Sign in")
+    st.caption("This is a simple demo login (stored in Streamlit Secrets).")
+
+    users = get_users()
+    if not users:
+        st.error("No USERS found in Streamlit Secrets. Add USERS in Secrets first.")
+        st.stop()
+
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+    if st.button("Sign in"):
+        if username not in users:
+            st.error("Invalid username/password.")
+            return
+        hashed = users[username].encode("utf-8")
+        ok = bcrypt.checkpw(password.encode("utf-8"), hashed)
+        if not ok:
+            st.error("Invalid username/password.")
+            return
+        st.session_state["auth_user"] = username
+        st.success("Signed in!")
+        st.rerun()
+
+
+# -------------------------
+# Document parsing
+# -------------------------
+def read_uploaded_file(file) -> str:
+    name = file.name.lower()
+    if name.endswith(".txt"):
+        return file.read().decode("utf-8", errors="replace")
+    if name.endswith(".pdf"):
+        reader = PdfReader(file)
+        parts = []
+        for page in reader.pages:
+            parts.append(page.extract_text() or "")
+        return "\n".join(parts)
+    return ""
+
+
+def chunk_text(text: str) -> List[str]:
+    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return []
+    sections = re.split(r"\n(?=[A-Z][A-Z ]+\n)", text)
+    chunks = [s.strip() for s in sections if s.strip()]
+    # fallback: if no headers, do basic chunking
+    if len(chunks) <= 1:
+        words = text.split()
+        out = []
+        buf = []
+        for w in words:
+            buf.append(w)
+            if len(buf) >= 220:
+                out.append(" ".join(buf))
+                buf = []
+        if buf:
+            out.append(" ".join(buf))
+        chunks = out
+    return chunks
+
+
+@st.cache_resource
+def load_embedder() -> SentenceTransformer:
+    return SentenceTransformer(EMBED_MODEL_NAME)
+
+
+def embed_chunks(chunks: List[str]) -> np.ndarray:
+    model = load_embedder()
+    embs = model.encode(chunks, convert_to_numpy=True, normalize_embeddings=True).astype(np.float32)
+    return embs
+
+
+def build_knn(embeddings: np.ndarray) -> NearestNeighbors:
+    nn = NearestNeighbors(metric="cosine")
+    nn.fit(embeddings)
+    return nn
+
+
+def retrieve_across_docs(
+    query: str,
+    doc_ids: List[str],
+    top_k: int,
+) -> List[Tuple[float, str, int, str, str]]:
+    """
+    Returns list of (similarity, doc_id, chunk_index, doc_name, chunk_text)
+    """
+    model = load_embedder()
+    q_emb = model.encode([query], convert_to_numpy=True, normalize_embeddings=True).astype(np.float32)
+
+    # Load embeddings/chunks and build a combined matrix
+    all_chunks = []
+    all_meta = []  # (doc_id, chunk_idx, doc_name)
+    all_embs = []
+
+    docs = {d["doc_id"]: d["name"] for d in docstore.list_docs()}
+
+    for doc_id in doc_ids:
+        loaded = docstore.load_index(doc_id)
+        if not loaded:
+            continue
+        chunks, embs = loaded
+        all_embs.append(embs)
+        for i, ch in enumerate(chunks):
+            all_chunks.append(ch)
+            all_meta.append((doc_id, i, docs.get(doc_id, doc_id)))
+
+    if not all_chunks:
+        return []
+
+    E = np.vstack(all_embs)
+    nn = build_knn(E)
+    k = min(top_k, len(all_chunks))
+    distances, idxs = nn.kneighbors(q_emb, n_neighbors=k)
+
+    hits = []
+    for dist, idx in zip(distances[0], idxs[0]):
+        sim = 1.0 - float(dist)
+        doc_id, chunk_idx, doc_name = all_meta[int(idx)]
+        hits.append((sim, doc_id, chunk_idx, doc_name, all_chunks[int(idx)],))
+    hits.sort(key=lambda x: x[0], reverse=True)
+    return hits
+
+
+# -------------------------
+# Smart suggestions (Option C)
+# -------------------------
+@st.cache_data(show_spinner=False)
+def generate_suggested_questions(doc_key: str, doc_preview: str, model_name: str) -> List[str]:
+    client = OpenAI()
+    system = "Return ONLY 3 to 6 helpful user questions as a bullet list. No extra text."
+    user = f"""DOCUMENT PREVIEW:
+{doc_preview}
+
+Write 3-6 realistic questions someone would ask about this document.
+"""
+    resp = client.responses.create(
+        model=model_name,
+        input=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+    )
+    text = resp.output_text.strip()
+
     lines = [l.strip() for l in text.splitlines() if l.strip()]
-    qs: List[str] = []
+    qs = []
     for l in lines:
         l = re.sub(r"^[\-\*\d\.\)\s]+", "", l).strip()
         if not l:
             continue
         if not l.endswith("?"):
-            l = l + "?"
-        if len(l) < 8:
-            continue
+            l += "?"
         qs.append(l)
-    # De-dupe preserving order
-    seen = set()
+
+    # de-dupe
     out = []
+    seen = set()
     for q in qs:
-        key = q.lower()
-        if key in seen:
+        k = q.lower()
+        if k in seen:
             continue
-        seen.add(key)
+        seen.add(k)
         out.append(q)
-    return out[:6]
+    return out[:6] if out else ["What is this document about?", "What are the key rules/policies?", "Are there deadlines or time limits?"]
+
+
+def doc_preview_from_chunks(chunks: List[str], max_chars: int = 4500) -> str:
+    ranked = sorted(chunks, key=len, reverse=True)[:6]
+    preview = "\n\n---\n\n".join(ranked)
+    return preview[:max_chars]
 
 
 # -------------------------
-# Embeddings / Index
+# RAG synthesis
 # -------------------------
-@st.cache_resource
-def load_embedding_model() -> SentenceTransformer:
-    return SentenceTransformer(EMBED_MODEL_NAME)
+def synthesize_answer(question: str, sources: List[Tuple[int, str, str]], model_name: str) -> str:
+    """
+    sources = [(num, doc_name, text)]
+    """
+    client = OpenAI()
 
+    ctx = []
+    for num, doc_name, text in sources:
+        ctx.append(f"[{num}] ({doc_name})\n{text}")
+    context = "\n\n---\n\n".join(ctx)
 
-def chunk_text(text: str) -> List[str]:
-    """Split by ALL CAPS headers for decent chunking on policy/FAQ docs."""
-    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
-    if not text:
-        return []
-    sections = re.split(r"\n(?=[A-Z][A-Z ]+\n)", text)
-    return [s.strip() for s in sections if s.strip()]
+    system = (
+        "You are a helpful assistant. Answer using ONLY the DOCUMENT SOURCES.\n"
+        "Cite facts like [1], [2]. If not found, say: "
+        "\"I don't know based on the provided documents.\""
+    )
 
+    user = f"""DOCUMENT SOURCES:
+{context}
 
-def build_index(chunks: List[str]):
-    model = load_embedding_model()
-    embeddings = model.encode(chunks, convert_to_numpy=True, normalize_embeddings=True).astype(np.float32)
+QUESTION:
+{question}
 
-    if HAS_FAISS:
-        dim = embeddings.shape[1]
-        index = faiss.IndexFlatIP(dim)  # type: ignore
-        index.add(embeddings)
-        return index, "faiss"
-    else:
-        nn = NearestNeighbors(n_neighbors=min(5, len(chunks)), metric="cosine")
-        nn.fit(embeddings)
-        return nn, "sklearn"
-
-
-def retrieve(query: str, chunks: List[str], index, index_type: str, top_k: int) -> List[Tuple[float, int, str]]:
-    """Return list of (similarity, chunk_id, chunk_text) sorted best->worst."""
-    top_k = min(top_k, len(chunks))
-    if top_k <= 0:
-        return []
-
-    model = load_embedding_model()
-    q_emb = model.encode([query], convert_to_numpy=True, normalize_embeddings=True).astype(np.float32)
-
-    results: List[Tuple[float, int, str]] = []
-
-    if index_type == "faiss":
-        scores, idxs = index.search(q_emb, top_k)  # type: ignore
-        for score, idx in zip(scores[0], idxs[0]):
-            if idx == -1:
-                continue
-            results.append((float(score), int(idx), chunks[int(idx)]))
-    else:
-        distances, idxs = index.kneighbors(q_emb, n_neighbors=top_k)
-        for dist, idx in zip(distances[0], idxs[0]):
-            sim = 1.0 - float(dist)
-            results.append((sim, int(idx), chunks[int(idx)]))
-
-    results.sort(key=lambda x: x[0], reverse=True)
-    return results
+Return in this format:
+TL;DR: <one sentence>
+Answer: <bullets>
+Details: <short paragraph if needed>
+"""
+    resp = client.responses.create(
+        model=model_name,
+        input=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+    )
+    return resp.output_text.strip()
 
 
 def compute_confidence(similarities: List[float], answer: str) -> str:
     if not similarities:
         return "Low"
-    ans = (answer or "").lower()
-    if "i don't know" in ans or "i do not know" in ans:
-        return "Low"
-
     top = similarities[0]
     avg = sum(similarities) / len(similarities)
-
+    a = answer.lower()
+    if "i don't know" in a:
+        return "Low"
     if top >= 0.55 and avg >= 0.35:
         return "High"
     if top >= 0.40:
@@ -249,410 +307,240 @@ def compute_confidence(similarities: List[float], answer: str) -> str:
     return "Low"
 
 
-def followup_suggestions(question: str) -> List[str]:
-    q = question.strip().rstrip("?")
-    return [
-        f"Where in the document is {q} covered?",
-        "Are there exceptions or edge cases?",
-        "What steps should I follow next?",
-    ]
-
-
-def export_chat_txt(chat_history: List[Dict]) -> str:
-    lines = []
-    for msg in chat_history:
-        role = msg["role"].upper()
-        content = msg["content"]
-        lines.append(f"{role}: {content}")
-        lines.append("")
-    return "\n".join(lines).strip()
-
-
 # -------------------------
-# True RAG synthesis
-# -------------------------
-def synthesize_answer(
-    question: str,
-    sources: List[Tuple[int, str]],
-    chat_history: List[Dict],
-    model_name: str
-) -> str:
-    client = OpenAI()
-
-    trimmed_history = chat_history[-8:] if len(chat_history) > 8 else chat_history
-    history_text = ""
-    for msg in trimmed_history:
-        role = msg.get("role", "user").upper()
-        content = msg.get("content", "")
-        history_text += f"{role}: {content}\n"
-
-    context_blocks = []
-    for num, text in sources:
-        context_blocks.append(f"[{num}]\n{text}")
-    context = "\n\n---\n\n".join(context_blocks)
-
-    system_msg = (
-        "You are a helpful company support assistant. "
-        "Answer using ONLY the provided DOCUMENT SOURCES. "
-        "When you use a fact, cite it like [1] or [2]. "
-        "Return the answer in this format:\n"
-        "TL;DR: <one sentence>\n"
-        "Answer: <2-6 bullet points if possible>\n"
-        "Details: <short paragraph if needed>\n"
-        "If the answer is not in sources, say exactly: "
-        "\"I don't know based on the provided documents.\""
-    )
-
-    user_msg = f"""DOCUMENT SOURCES:
-{context}
-
-CHAT HISTORY:
-{history_text}
-
-CURRENT QUESTION:
-{question}
-
-RULES:
-- Use ONLY DOCUMENT SOURCES.
-- Cite facts like [1], [2].
-- If missing, say: "I don't know based on the provided documents."
-- Do not invent policies, steps, or facts.
-"""
-
-    resp = client.responses.create(
-        model=model_name,
-        input=[
-            {"role": "system", "content": system_msg},
-            {"role": "user", "content": user_msg},
-        ],
-    )
-    return resp.output_text.strip()
-
-
-# -------------------------
-# Option C: Smart suggested questions
-# -------------------------
-@st.cache_data(show_spinner=False)
-def generate_suggested_questions(doc_id: str, doc_preview: str, model_name: str) -> List[str]:
-    """
-    Generates 3-6 suggested questions based on the document preview.
-    Cached by doc_id so reruns don't burn tokens.
-    """
-    client = OpenAI()
-
-    system_msg = (
-        "You generate helpful example questions a user might ask about a document. "
-        "Return ONLY a bullet list of 3 to 6 questions. No extra text."
-    )
-
-    user_msg = f"""DOCUMENT PREVIEW:
-{doc_preview}
-
-TASK:
-Write 3 to 6 realistic, high-value questions someone would ask about this document.
-
-RULES:
-- Return ONLY a bullet list (one question per line).
-- Keep them short.
-- Questions must be answerable from the document.
-"""
-
-    resp = client.responses.create(
-        model=model_name,
-        input=[
-            {"role": "system", "content": system_msg},
-            {"role": "user", "content": user_msg},
-        ],
-    )
-    questions = parse_bullets(resp.output_text)
-    # Fallback if parsing is empty
-    if not questions:
-        questions = [
-            "What are the key policies described in this document?",
-            "Are there any deadlines or time limits mentioned?",
-            "What steps should I follow to complete the main process described?",
-        ]
-    return questions
-
-
-def build_doc_preview(chunks: List[str], max_chars: int = 5000) -> str:
-    """
-    Build a preview from the most representative chunks.
-    We take a few top chunks by length (often policy sections), then truncate.
-    """
-    if not chunks:
-        return ""
-    # pick up to 6 larger chunks
-    ranked = sorted(chunks, key=lambda x: len(x), reverse=True)[:6]
-    preview = "\n\n---\n\n".join(ranked)
-    return preview[:max_chars]
-
-
-# -------------------------
-# Landing Page
+# Pages
 # -------------------------
 def landing_page():
-    st.markdown(
-        """
-        <div class="hero">
-          <div class="badge">⚡ True RAG • Citations • Confidence • Smart Prompts</div>
-          <h1 style="margin-top:14px; margin-bottom:6px;">AtlasDocs</h1>
-          <h3 style="margin-top:0px; font-weight:600;">Your company’s docs, instantly searchable — answers with citations, not guesses.</h3>
-          <div class="muted" style="margin-top:10px;">
-            Upload internal policies, FAQs, onboarding docs, and get a grounded assistant that shows where every answer came from.
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-    st.markdown("")
-    col1, col2 = st.columns([1.15, 1], gap="large")
-    with col1:
-        st.markdown("### What you get")
-        st.markdown(
-            """
-- **Upload** a document (policies / SOPs / FAQs)
-- **Chat** like a support agent
-- **Citations** to the exact source chunks
-- **Confidence score** to reduce hallucinations
-- **Smart prompts** generated from your document
-            """
-        )
-
-        st.markdown("### How it works")
-        st.markdown(
-            """
-1) Chunk the document into sections  
-2) Embed sections into vectors  
-3) Retrieve top-k relevant chunks (semantic search)  
-4) LLM synthesizes an answer grounded in sources  
-5) LLM suggests example questions from the doc  
-            """
-        )
-
-    with col2:
-        st.markdown("### Product preview")
-        st.markdown(
-            """
-            <div class="preview">
-              <div class="muted" style="margin-bottom:10px;">Smart prompts + citations</div>
-              <div class="muted">Suggested questions adapt to the uploaded document.</div>
-              <div style="margin-top:12px;">
-                <span class="kbd">What is the refund policy?</span>
-                <span class="kbd">How do I reset my password?</span>
-                <span class="kbd">When does billing occur?</span>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-    st.markdown("### Why teams like it")
-    st.markdown(
-        """
-        <div class="grid3">
-          <div class="card"><b>Grounded answers</b><br/><span class="muted">Uses only retrieved sources.</span></div>
-          <div class="card"><b>Citations</b><br/><span class="muted">Every answer references doc chunks.</span></div>
-          <div class="card"><b>Smart prompts</b><br/><span class="muted">Suggestions adapt to each uploaded doc.</span></div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-    st.markdown("")
-    st.info("Open **Demo** in the sidebar to try it.")
+    st.markdown("## AtlasDocs")
+    st.markdown("Upload PDFs/TXTs, save them, search across multiple documents, and get cited answers.")
 
 
-# -------------------------
-# Demo Page (2-panel)
-# -------------------------
-def demo_page():
+def docs_page(user: str):
+    st.header("📚 Documents (Saved Library)")
+
+    upload = st.file_uploader("Upload a document", type=["txt", "pdf"])
+    if upload:
+        raw = read_uploaded_file(upload)
+        if not raw.strip():
+            st.error("Could not read document.")
+            return
+
+        chunks = chunk_text(raw)
+        embs = embed_chunks(chunks)
+
+        doc_id = docstore.sha16(upload.name + "::" + raw[:20000])
+        docstore.upsert_doc(doc_id, upload.name)
+        docstore.save_raw(doc_id, raw)
+        docstore.save_index(doc_id, chunks, embs)
+
+        st.success(f"Saved: {upload.name} (chunks: {len(chunks)})")
+
+    docs = docstore.list_docs()
+    if not docs:
+        st.info("No saved docs yet. Upload a PDF/TXT above.")
+        return
+
+    st.subheader("Your saved docs")
+    for d in docs:
+        c1, c2, c3 = st.columns([4, 2, 1])
+        with c1:
+            st.write(f"**{d['name']}**")
+            st.caption(f"doc_id: {d['doc_id']}")
+        with c2:
+            st.caption(f"Added: {d['created_at']}")
+        with c3:
+            if st.button("Delete", key=f"del_{d['doc_id']}"):
+                docstore.delete_doc(d["doc_id"])
+                st.rerun()
+
+
+def demo_page(user: str):
     st.title("🧠 AtlasDocs Demo")
-    st.caption("Modern RAG assistant: chat on the left, sources on the right.")
 
     api_key = get_api_key()
     if not api_key:
-        st.error(
-            "OPENAI_API_KEY is not set.\n\n"
-            "Local (Windows): set OPENAI_API_KEY in your terminal.\n"
-            "Streamlit Cloud: add OPENAI_API_KEY in app Secrets."
-        )
+        st.error("OPENAI_API_KEY is not set in Streamlit Cloud Secrets.")
         st.stop()
     os.environ["OPENAI_API_KEY"] = api_key
 
-    # Session state
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
-    if "active_doc_name" not in st.session_state:
-        st.session_state.active_doc_name = None
-    if "active_doc_id" not in st.session_state:
-        st.session_state.active_doc_id = None
-    if "question_input" not in st.session_state:
-        st.session_state["question_input"] = ""
-    if "pending_question" not in st.session_state:
-        st.session_state["pending_question"] = None
+    docs = docstore.list_docs()
+    if not docs:
+        st.info("No saved documents yet. Go to **Documents** and upload a PDF/TXT.")
+        return
+
+    doc_map = {d["name"]: d["doc_id"] for d in docs}
+    names = list(doc_map.keys())
+
+    st.sidebar.header("Search Scope")
+    selected_names = st.sidebar.multiselect("Search these documents", options=names, default=names[:1])
+    selected_doc_ids = [doc_map[n] for n in selected_names] if selected_names else []
+
+    st.sidebar.header("Model")
+    model_name = st.sidebar.text_input("OpenAI model", value="gpt-4.1-mini")
+    top_k = st.sidebar.slider("Sources to retrieve", 1, 8, 4)
+
+    if "chat" not in st.session_state:
+        st.session_state.chat = []
+    if "pending" not in st.session_state:
+        st.session_state.pending = None
     if "last_hits" not in st.session_state:
-        st.session_state["last_hits"] = []
-    if "last_confidence" not in st.session_state:
-        st.session_state["last_confidence"] = None
-    if "last_question" not in st.session_state:
-        st.session_state["last_question"] = None
+        st.session_state.last_hits = []
+    if "last_conf" not in st.session_state:
+        st.session_state.last_conf = None
 
-    st.sidebar.header("Demo Settings")
-    openai_model = st.sidebar.text_input("OpenAI model", value="gpt-4.1-mini")
-    top_k_ui = st.sidebar.slider("Sources to retrieve", 1, 5, 3)
-    show_sources = st.sidebar.checkbox("Show sources panel", True)
+    # build suggestions from the first selected doc (or first doc)
+    base_doc = selected_doc_ids[0] if selected_doc_ids else docs[0]["doc_id"]
+    loaded = docstore.load_index(base_doc)
+    if loaded:
+        base_chunks, _ = loaded
+        preview = doc_preview_from_chunks(base_chunks)
+        suggested = generate_suggested_questions(doc_key=base_doc, doc_preview=preview, model_name=model_name)
+    else:
+        suggested = ["What is this document about?", "What are key policies?", "Any deadlines?"]
 
-    st.sidebar.markdown("---")
-    if st.sidebar.button("Clear chat"):
-        st.session_state.chat_history = []
-        st.session_state["question_input"] = ""
-        st.session_state["pending_question"] = None
-        st.session_state["last_hits"] = []
-        st.session_state["last_confidence"] = None
-        st.session_state["last_question"] = None
+    def ask(q: str):
+        st.session_state.pending = q.strip()
 
-    txt = export_chat_txt(st.session_state.chat_history)
-    filename = f"atlasdocs_chat_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-    st.sidebar.download_button("Export chat (.txt)", data=txt, file_name=filename, mime="text/plain")
+    st.markdown("### Suggested questions (auto-generated from your doc)")
+    cols = st.columns(3)
+    for i, q in enumerate(suggested):
+        with cols[i % 3]:
+            if st.button(q, use_container_width=True, key=f"sugg_{i}"):
+                ask(q)
 
-    uploaded_file = st.file_uploader("Upload a TXT document", type=["txt"])
-    if not uploaded_file:
-        st.info("Upload a TXT file to start.")
-        return
+    st.markdown("### Chat")
+    for m in st.session_state.chat:
+        with st.chat_message(m["role"]):
+            st.write(m["content"])
 
-    text = uploaded_file.read().decode("utf-8", errors="replace")
-    chunks = chunk_text(text)
-    if not chunks:
-        st.error("Document appears empty or couldn't be parsed.")
-        return
+    question = st.text_input("Ask a question")
+    if st.button("Send"):
+        ask(question)
 
-    doc_id = stable_doc_id(text, uploaded_file.name)
+    pending = st.session_state.pending
+    if pending:
+        q = pending
+        st.session_state.pending = None
 
-    # New document uploaded -> reset conversation + doc state
-    if st.session_state.active_doc_id != doc_id:
-        st.session_state.active_doc_id = doc_id
-        st.session_state.active_doc_name = uploaded_file.name
-        st.session_state.chat_history = []
-        st.session_state["question_input"] = ""
-        st.session_state["pending_question"] = None
-        st.session_state["last_hits"] = []
-        st.session_state["last_confidence"] = None
-        st.session_state["last_question"] = None
+        st.session_state.chat.append({"role": "user", "content": q})
+        with st.chat_message("user"):
+            st.write(q)
 
-    index, index_type = build_index(chunks)
-    top_k = min(top_k_ui, len(chunks))
-    st.success(f"Indexed {len(chunks)} chunks. Retrieving top {top_k} sources.")
+        if not selected_doc_ids:
+            st.error("Select at least one document in the sidebar.")
+            return
 
-    def submit_question(q: str):
-        st.session_state["pending_question"] = (q or "").strip()
-        st.session_state["question_input"] = ""
+        # analytics event
+        docstore.log_event(user=user, doc_ids=selected_doc_ids, question=q)
 
-    # Build doc preview + generate smart prompts (cached)
-    doc_preview = build_doc_preview(chunks)
-    with st.spinner("Generating smart prompts from your document..."):
-        suggested = generate_suggested_questions(doc_id=doc_id, doc_preview=doc_preview, model_name=openai_model)
+        hits = retrieve_across_docs(q, selected_doc_ids, top_k=top_k)
+        st.session_state.last_hits = hits
 
-    left, right = st.columns([1.35, 1], gap="large")
+        # build sources list for LLM
+        sources = []
+        sims = []
+        for i, (sim, _doc_id, _chunk_idx, doc_name, chunk_text) in enumerate(hits, start=1):
+            sources.append((i, doc_name, chunk_text))
+            sims.append(sim)
 
-    with left:
-        st.markdown("### Try these suggested questions (from your document)")
-        # Show suggestions as buttons (up to 6)
-        cols = st.columns(3)
-        for i, q in enumerate(suggested):
-            with cols[i % 3]:
-                if st.button(q, use_container_width=True, key=f"suggest_{doc_id}_{i}"):
-                    submit_question(q)
+        with st.spinner("Thinking..."):
+            answer = synthesize_answer(q, sources, model_name=model_name)
 
-        st.markdown("### Chat")
-        for msg in st.session_state.chat_history:
-            with st.chat_message(msg["role"]):
-                st.write(msg["content"])
+        conf = compute_confidence(sims, answer)
+        st.session_state.last_conf = conf
 
-        st.markdown("### Ask a question")
-
-        def on_send():
-            submit_question(st.session_state.get("question_input", ""))
-
-        st.text_input("Question", key="question_input")
-        st.button("Send", on_click=on_send)
-
-        pending = st.session_state.get("pending_question")
-        if pending:
-            question = pending
-            st.session_state["pending_question"] = None
-            st.session_state["last_question"] = question
-
-            st.session_state.chat_history.append({"role": "user", "content": question})
-            with st.chat_message("user"):
-                st.write(question)
-
-            hits = retrieve(question, chunks, index, index_type, top_k)
-            similarities = [h[0] for h in hits]
-            numbered_sources = [(i, chunk) for i, (_sim, _id, chunk) in enumerate(hits, start=1)]
-
-            with st.spinner("Thinking..."):
-                answer = synthesize_answer(
-                    question=question,
-                    sources=numbered_sources,
-                    chat_history=st.session_state.chat_history,
-                    model_name=openai_model,
-                )
-
-            confidence = compute_confidence(similarities, answer)
-
-            st.session_state["last_hits"] = hits
-            st.session_state["last_confidence"] = confidence
-
-            st.session_state.chat_history.append({"role": "assistant", "content": answer})
-
-            with st.chat_message("assistant"):
-                st.write(answer)
-
-                if confidence == "High":
-                    st.success("Confidence: HIGH")
-                elif confidence == "Medium":
-                    st.warning("Confidence: MEDIUM")
-                else:
-                    st.error("Confidence: LOW")
-                    st.markdown("**Try a follow-up:**")
-                    for sug in followup_suggestions(question):
-                        st.markdown(f"- {sug}")
-
-    with right:
-        st.markdown("### Sources")
-        if not show_sources:
-            st.info("Sources panel is hidden (enable it in the sidebar).")
-        else:
-            last_q = st.session_state.get("last_question")
-            last_hits = st.session_state.get("last_hits", [])
-            last_conf = st.session_state.get("last_confidence")
-
-            if last_q:
-                st.caption(f"Showing sources for: **{last_q}**")
-            if last_conf:
-                st.caption(f"Confidence: **{last_conf}**")
-
-            if not last_hits:
-                st.info("Ask a question to see relevant sources here.")
+        st.session_state.chat.append({"role": "assistant", "content": answer})
+        with st.chat_message("assistant"):
+            st.write(answer)
+            if conf == "High":
+                st.success("Confidence: HIGH")
+            elif conf == "Medium":
+                st.warning("Confidence: MEDIUM")
             else:
-                for i, (score, _chunk_id, chunk_text_val) in enumerate(last_hits, start=1):
-                    with st.expander(f"Source {i} • similarity {score:.3f}", expanded=(i == 1)):
-                        st.write(chunk_text_val)
+                st.error("Confidence: LOW")
+
+    st.markdown("---")
+    st.markdown("### Sources")
+    if not st.session_state.last_hits:
+        st.info("Ask a question to see sources.")
+    else:
+        st.caption(f"Confidence: **{st.session_state.last_conf}**")
+        for i, (sim, doc_id, chunk_idx, doc_name, chunk_text) in enumerate(st.session_state.last_hits, start=1):
+            with st.expander(f"[{i}] {doc_name} • similarity {sim:.3f}", expanded=(i == 1)):
+                st.write(chunk_text)
 
 
+def analytics_page():
+    st.header("📈 Analytics")
+
+    # Pull events and compute charts
+    docstore.init_db()
+    import sqlite3
+    with sqlite3.connect(docstore.DB_PATH) as conn:
+        df = pd.read_sql_query("SELECT ts, user, doc_ids, question FROM events ORDER BY ts ASC", conn)
+
+    if df.empty:
+        st.info("No analytics yet. Ask some questions in Demo.")
+        return
+
+    df["ts"] = pd.to_datetime(df["ts"])
+    df["date"] = df["ts"].dt.date
+
+    total = len(df)
+    st.metric("Total questions", total)
+
+    st.subheader("Questions per day")
+    per_day = df.groupby("date").size().reset_index(name="questions")
+
+    fig = plt.figure()
+    plt.plot(per_day["date"], per_day["questions"])
+    plt.xticks(rotation=45, ha="right")
+    plt.tight_layout()
+    st.pyplot(fig)
+
+    st.subheader("Top users")
+    top_users = df.groupby("user").size().sort_values(ascending=False).head(20)
+    st.dataframe(top_users.reset_index(name="questions"), use_container_width=True)
+
+    st.subheader("Top doc sets")
+    top_docsets = df.groupby("doc_ids").size().sort_values(ascending=False).head(20)
+    st.dataframe(top_docsets.reset_index(name="questions"), use_container_width=True)
+
+    st.subheader("Recent questions")
+    st.dataframe(df.tail(30), use_container_width=True)
+
+
+# -------------------------
+# Main
+# -------------------------
 def main():
     st.set_page_config(page_title="AtlasDocs", page_icon="🧠", layout="wide")
     apply_modern_ui()
+    docstore.init_db()
+
+    # Auth gate
+    if not is_logged_in():
+        login_ui()
+        return
+
+    user = st.session_state["auth_user"]
 
     st.sidebar.title("AtlasDocs")
-    page = st.sidebar.radio("Navigate", ["Landing", "Demo"], index=0)
+    st.sidebar.caption(f"Signed in as **{user}**")
+    if st.sidebar.button("Sign out"):
+        st.session_state["auth_user"] = None
+        st.rerun()
+
+    page = st.sidebar.radio("Navigate", ["Landing", "Documents", "Demo", "Analytics"], index=2)
 
     if page == "Landing":
         landing_page()
+    elif page == "Documents":
+        docs_page(user)
+    elif page == "Demo":
+        demo_page(user)
     else:
-        demo_page()
+        analytics_page()
 
 
 if __name__ == "__main__":
