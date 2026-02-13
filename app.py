@@ -24,10 +24,19 @@ def apply_modern_ui():
     st.markdown(
         """
         <style>
-        .block-container { padding-top: 1.25rem; padding-bottom: 2.4rem; max-width: 1250px; }
+        .block-container { 
+            padding-top: 1.25rem; 
+            padding-bottom: 2.4rem; 
+            max-width: 1250px; 
+        }
 
+        /* Desktop sidebar (glass style) */
         section[data-testid="stSidebar"] {
-            background: radial-gradient(1200px 600px at 20% 0%, rgba(124,58,237,0.22), rgba(17,26,46,0.35));
+            background: radial-gradient(
+                1200px 600px at 20% 0%,
+                rgba(124,58,237,0.22),
+                rgba(17,26,46,0.85)
+            );
             border-right: 1px solid rgba(255,255,255,0.06);
         }
 
@@ -38,13 +47,16 @@ def apply_modern_ui():
             background: rgba(255,255,255,0.04) !important;
             transition: all 140ms ease-in-out;
         }
+
         .stButton > button:hover {
             border: 1px solid rgba(124,58,237,0.65) !important;
             background: rgba(124,58,237,0.12) !important;
             transform: translateY(-1px);
         }
 
-        input, textarea { border-radius: 12px !important; }
+        input, textarea { 
+            border-radius: 12px !important; 
+        }
 
         details {
             border-radius: 14px !important;
@@ -53,18 +65,34 @@ def apply_modern_ui():
             padding: 0.35rem 0.6rem;
         }
 
-        /* Mobile-friendly tweaks (keep sidebar so Streamlit provides hamburger menu) */
+        /* Mobile improvements */
         @media (max-width: 768px) {
-          .block-container { padding-left: 0.9rem; padding-right: 0.9rem; }
-          .stButton > button { width: 100% !important; }
-          h1 { font-size: 1.65rem !important; }
-          h2 { font-size: 1.35rem !important; }
-          h3 { font-size: 1.1rem !important; }
+
+            /* Make sidebar SOLID when opened as hamburger drawer */
+            section[data-testid="stSidebar"] {
+                background: #0f172a !important;  /* solid dark slate */
+                backdrop-filter: none !important;
+            }
+
+            .block-container { 
+                padding-left: 0.9rem; 
+                padding-right: 0.9rem; 
+            }
+
+            .stButton > button { 
+                width: 100% !important; 
+            }
+
+            h1 { font-size: 1.65rem !important; }
+            h2 { font-size: 1.35rem !important; }
+            h3 { font-size: 1.1rem !important; }
         }
+
         </style>
         """,
         unsafe_allow_html=True,
     )
+
 
 
 # -------------------------
