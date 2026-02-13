@@ -1,5 +1,6 @@
 import os
 import re
+import hashlib
 from typing import List, Tuple, Dict
 from datetime import datetime
 
@@ -31,16 +32,13 @@ def apply_modern_ui():
     st.markdown(
         """
         <style>
-        /* Layout width + spacing */
         .block-container { padding-top: 1.25rem; padding-bottom: 2.4rem; max-width: 1250px; }
 
-        /* Sidebar gradient + border */
         section[data-testid="stSidebar"] {
             background: radial-gradient(1200px 600px at 20% 0%, rgba(124,58,237,0.22), rgba(17,26,46,0.35));
             border-right: 1px solid rgba(255,255,255,0.06);
         }
 
-        /* Buttons */
         .stButton > button {
             border-radius: 12px !important;
             padding: 0.58rem 0.95rem !important;
@@ -54,19 +52,14 @@ def apply_modern_ui():
             transform: translateY(-1px);
         }
 
-        /* Inputs */
-        input, textarea {
-            border-radius: 12px !important;
-        }
+        input, textarea { border-radius: 12px !important; }
 
-        /* Alerts */
         div[data-testid="stAlert"] {
             border-radius: 14px !important;
             border: 1px solid rgba(255,255,255,0.08) !important;
             background: rgba(255,255,255,0.03) !important;
         }
 
-        /* Expanders */
         details {
             border-radius: 14px !important;
             border: 1px solid rgba(255,255,255,0.08) !important;
@@ -74,7 +67,6 @@ def apply_modern_ui():
             padding: 0.35rem 0.6rem;
         }
 
-        /* Chat bubbles */
         div[data-testid="stChatMessage"] {
             border-radius: 16px !important;
             border: 1px solid rgba(255,255,255,0.06);
@@ -82,7 +74,6 @@ def apply_modern_ui():
             padding: 0.2rem 0.25rem;
         }
 
-        /* Landing components */
         .hero {
             padding: 26px 24px;
             border-radius: 20px;
@@ -134,6 +125,52 @@ def apply_modern_ui():
         """,
         unsafe_allow_html=True
     )
+
+
+# -------------------------
+# Helpers
+# -------------------------
+def get_api_key() -> str | None:
+    """Safe secrets/env loading (won't crash locally if no secrets.toml exists)."""
+    api_key = os.environ.get("OPENAI_API_KEY")
+    try:
+        api_key = st.secrets.get("OPENAI_API_KEY") or api_key
+    except Exception:
+        pass
+    return api_key
+
+
+def stable_doc_id(text: str, filename: str) -> str:
+    h = hashlib.sha256()
+    h.update(filename.encode("utf-8", errors="ignore"))
+    h.update(b"::")
+    h.update(text.encode("utf-8", errors="ignore"))
+    return h.hexdigest()[:16]
+
+
+def parse_bullets(text: str) -> List[str]:
+    """Extract up to ~6 questions from model output."""
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    qs: List[str] = []
+    for l in lines:
+        l = re.sub(r"^[\-\*\d\.\)\s]+", "", l).strip()
+        if not l:
+            continue
+        if not l.endswith("?"):
+            l = l + "?"
+        if len(l) < 8:
+            continue
+        qs.append(l)
+    # De-dupe preserving order
+    seen = set()
+    out = []
+    for q in qs:
+        key = q.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(q)
+    return out[:6]
 
 
 # -------------------------
@@ -196,10 +233,8 @@ def retrieve(query: str, chunks: List[str], index, index_type: str, top_k: int) 
 
 
 def compute_confidence(similarities: List[float], answer: str) -> str:
-    """Simple heuristic confidence."""
     if not similarities:
         return "Low"
-
     ans = (answer or "").lower()
     if "i don't know" in ans or "i do not know" in ans:
         return "Low"
@@ -217,19 +252,31 @@ def compute_confidence(similarities: List[float], answer: str) -> str:
 def followup_suggestions(question: str) -> List[str]:
     q = question.strip().rstrip("?")
     return [
-        f"Can you point me to the exact section about {q}?",
-        "Is there an exception or edge case for this policy?",
+        f"Where in the document is {q} covered?",
+        "Are there exceptions or edge cases?",
         "What steps should I follow next?",
     ]
 
 
+def export_chat_txt(chat_history: List[Dict]) -> str:
+    lines = []
+    for msg in chat_history:
+        role = msg["role"].upper()
+        content = msg["content"]
+        lines.append(f"{role}: {content}")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+# -------------------------
+# True RAG synthesis
+# -------------------------
 def synthesize_answer(
     question: str,
     sources: List[Tuple[int, str]],
     chat_history: List[Dict],
     model_name: str
 ) -> str:
-    """LLM synthesis (True RAG): answer only from sources + cite like [1], [2]."""
     client = OpenAI()
 
     trimmed_history = chat_history[-8:] if len(chat_history) > 8 else chat_history
@@ -282,14 +329,63 @@ RULES:
     return resp.output_text.strip()
 
 
-def export_chat_txt(chat_history: List[Dict]) -> str:
-    lines = []
-    for msg in chat_history:
-        role = msg["role"].upper()
-        content = msg["content"]
-        lines.append(f"{role}: {content}")
-        lines.append("")
-    return "\n".join(lines).strip()
+# -------------------------
+# Option C: Smart suggested questions
+# -------------------------
+@st.cache_data(show_spinner=False)
+def generate_suggested_questions(doc_id: str, doc_preview: str, model_name: str) -> List[str]:
+    """
+    Generates 3-6 suggested questions based on the document preview.
+    Cached by doc_id so reruns don't burn tokens.
+    """
+    client = OpenAI()
+
+    system_msg = (
+        "You generate helpful example questions a user might ask about a document. "
+        "Return ONLY a bullet list of 3 to 6 questions. No extra text."
+    )
+
+    user_msg = f"""DOCUMENT PREVIEW:
+{doc_preview}
+
+TASK:
+Write 3 to 6 realistic, high-value questions someone would ask about this document.
+
+RULES:
+- Return ONLY a bullet list (one question per line).
+- Keep them short.
+- Questions must be answerable from the document.
+"""
+
+    resp = client.responses.create(
+        model=model_name,
+        input=[
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_msg},
+        ],
+    )
+    questions = parse_bullets(resp.output_text)
+    # Fallback if parsing is empty
+    if not questions:
+        questions = [
+            "What are the key policies described in this document?",
+            "Are there any deadlines or time limits mentioned?",
+            "What steps should I follow to complete the main process described?",
+        ]
+    return questions
+
+
+def build_doc_preview(chunks: List[str], max_chars: int = 5000) -> str:
+    """
+    Build a preview from the most representative chunks.
+    We take a few top chunks by length (often policy sections), then truncate.
+    """
+    if not chunks:
+        return ""
+    # pick up to 6 larger chunks
+    ranked = sorted(chunks, key=lambda x: len(x), reverse=True)[:6]
+    preview = "\n\n---\n\n".join(ranked)
+    return preview[:max_chars]
 
 
 # -------------------------
@@ -299,7 +395,7 @@ def landing_page():
     st.markdown(
         """
         <div class="hero">
-          <div class="badge">⚡ True RAG • Citations • Confidence</div>
+          <div class="badge">⚡ True RAG • Citations • Confidence • Smart Prompts</div>
           <h1 style="margin-top:14px; margin-bottom:6px;">AtlasDocs</h1>
           <h3 style="margin-top:0px; font-weight:600;">Your company’s docs, instantly searchable — answers with citations, not guesses.</h3>
           <div class="muted" style="margin-top:10px;">
@@ -320,16 +416,8 @@ def landing_page():
 - **Chat** like a support agent
 - **Citations** to the exact source chunks
 - **Confidence score** to reduce hallucinations
-- **Source panel** like Perplexity (modern UX)
+- **Smart prompts** generated from your document
             """
-        )
-        st.markdown(
-            """
-<div class="muted">
-Tip: In the demo, try <span class="kbd">Refund policy</span> or <span class="kbd">Password reset</span>.
-</div>
-            """,
-            unsafe_allow_html=True
         )
 
         st.markdown("### How it works")
@@ -339,6 +427,7 @@ Tip: In the demo, try <span class="kbd">Refund policy</span> or <span class="kbd
 2) Embed sections into vectors  
 3) Retrieve top-k relevant chunks (semantic search)  
 4) LLM synthesizes an answer grounded in sources  
+5) LLM suggests example questions from the doc  
             """
         )
 
@@ -347,23 +436,12 @@ Tip: In the demo, try <span class="kbd">Refund policy</span> or <span class="kbd
         st.markdown(
             """
             <div class="preview">
-              <div class="muted" style="margin-bottom:10px;">Chat + Sources layout</div>
-              <div style="border:1px solid rgba(255,255,255,0.08); border-radius:14px; padding:12px; background: rgba(255,255,255,0.02);">
-                <div class="muted" style="font-size:12px;">User</div>
-                <div style="margin-top:6px;">What is the refund policy?</div>
-              </div>
-
-              <div style="height:10px;"></div>
-
-              <div style="border:1px solid rgba(255,255,255,0.08); border-radius:14px; padding:12px; background: rgba(255,255,255,0.02);">
-                <div class="muted" style="font-size:12px;">AtlasDocs</div>
-                <div style="margin-top:6px;">
-                  TL;DR: Annual plans are refundable within 14 days. Monthly plans are not refundable. [1]
-                </div>
-              </div>
-
-              <div style="margin-top:12px;" class="muted">
-                Sources panel shows similarity scores and supporting text.
+              <div class="muted" style="margin-bottom:10px;">Smart prompts + citations</div>
+              <div class="muted">Suggested questions adapt to the uploaded document.</div>
+              <div style="margin-top:12px;">
+                <span class="kbd">What is the refund policy?</span>
+                <span class="kbd">How do I reset my password?</span>
+                <span class="kbd">When does billing occur?</span>
               </div>
             </div>
             """,
@@ -375,8 +453,8 @@ Tip: In the demo, try <span class="kbd">Refund policy</span> or <span class="kbd
         """
         <div class="grid3">
           <div class="card"><b>Grounded answers</b><br/><span class="muted">Uses only retrieved sources.</span></div>
-          <div class="card"><b>Citations</b><br/><span class="muted">Every answer references the doc chunks.</span></div>
-          <div class="card"><b>Modern UX</b><br/><span class="muted">Chat + Sources panel looks like a real SaaS.</span></div>
+          <div class="card"><b>Citations</b><br/><span class="muted">Every answer references doc chunks.</span></div>
+          <div class="card"><b>Smart prompts</b><br/><span class="muted">Suggestions adapt to each uploaded doc.</span></div>
         </div>
         """,
         unsafe_allow_html=True
@@ -393,8 +471,7 @@ def demo_page():
     st.title("🧠 AtlasDocs Demo")
     st.caption("Modern RAG assistant: chat on the left, sources on the right.")
 
-    # ✅ Streamlit Cloud + Local compatible key loading
-    api_key = st.secrets.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    api_key = get_api_key()
     if not api_key:
         st.error(
             "OPENAI_API_KEY is not set.\n\n"
@@ -409,6 +486,8 @@ def demo_page():
         st.session_state.chat_history = []
     if "active_doc_name" not in st.session_state:
         st.session_state.active_doc_name = None
+    if "active_doc_id" not in st.session_state:
+        st.session_state.active_doc_id = None
     if "question_input" not in st.session_state:
         st.session_state["question_input"] = ""
     if "pending_question" not in st.session_state:
@@ -443,8 +522,17 @@ def demo_page():
         st.info("Upload a TXT file to start.")
         return
 
-    # New document uploaded -> reset conversation
-    if st.session_state.active_doc_name != uploaded_file.name:
+    text = uploaded_file.read().decode("utf-8", errors="replace")
+    chunks = chunk_text(text)
+    if not chunks:
+        st.error("Document appears empty or couldn't be parsed.")
+        return
+
+    doc_id = stable_doc_id(text, uploaded_file.name)
+
+    # New document uploaded -> reset conversation + doc state
+    if st.session_state.active_doc_id != doc_id:
+        st.session_state.active_doc_id = doc_id
         st.session_state.active_doc_name = uploaded_file.name
         st.session_state.chat_history = []
         st.session_state["question_input"] = ""
@@ -453,34 +541,29 @@ def demo_page():
         st.session_state["last_confidence"] = None
         st.session_state["last_question"] = None
 
-    text = uploaded_file.read().decode("utf-8", errors="replace")
-    chunks = chunk_text(text)
-    if not chunks:
-        st.error("Document appears empty or couldn't be parsed.")
-        return
-
     index, index_type = build_index(chunks)
     top_k = min(top_k_ui, len(chunks))
     st.success(f"Indexed {len(chunks)} chunks. Retrieving top {top_k} sources.")
 
-    def submit_question(text: str):
-        st.session_state["pending_question"] = (text or "").strip()
+    def submit_question(q: str):
+        st.session_state["pending_question"] = (q or "").strip()
         st.session_state["question_input"] = ""
+
+    # Build doc preview + generate smart prompts (cached)
+    doc_preview = build_doc_preview(chunks)
+    with st.spinner("Generating smart prompts from your document..."):
+        suggested = generate_suggested_questions(doc_id=doc_id, doc_preview=doc_preview, model_name=openai_model)
 
     left, right = st.columns([1.35, 1], gap="large")
 
     with left:
-        st.markdown("### Try these example prompts")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            if st.button("Refund policy", use_container_width=True):
-                submit_question("What is the refund policy?")
-        with c2:
-            if st.button("Password reset", use_container_width=True):
-                submit_question("How do I reset my password?")
-        with c3:
-            if st.button("Billing timing", use_container_width=True):
-                submit_question("When does billing occur?")
+        st.markdown("### Try these suggested questions (from your document)")
+        # Show suggestions as buttons (up to 6)
+        cols = st.columns(3)
+        for i, q in enumerate(suggested):
+            with cols[i % 3]:
+                if st.button(q, use_container_width=True, key=f"suggest_{doc_id}_{i}"):
+                    submit_question(q)
 
         st.markdown("### Chat")
         for msg in st.session_state.chat_history:
@@ -501,7 +584,6 @@ def demo_page():
             st.session_state["pending_question"] = None
             st.session_state["last_question"] = question
 
-            # Render user bubble immediately
             st.session_state.chat_history.append({"role": "user", "content": question})
             with st.chat_message("user"):
                 st.write(question)
@@ -520,7 +602,6 @@ def demo_page():
 
             confidence = compute_confidence(similarities, answer)
 
-            # Save for sources panel
             st.session_state["last_hits"] = hits
             st.session_state["last_confidence"] = confidence
 
